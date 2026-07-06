@@ -34,10 +34,7 @@ pub(crate) type BoxedTransactionAction = Arc<dyn TransactionAction>;
 /// responsible for generating the updates and requirements needed to modify the table
 /// metadata.
 ///
-/// This trait is public so downstream crates can add narrowly scoped transaction
-/// extensions without reimplementing the transaction orchestration in this crate.
-/// The intended extension point is custom action construction plus
-/// [`ApplyTransactionAction`], not direct mutation of [`Transaction`] internals.
+/// AER_LOG: Make this public for Charon reclustering spike.
 #[async_trait]
 pub trait TransactionAction: AsAny + Sync + Send {
     /// Commits this action against the provided table and returns the resulting updates.

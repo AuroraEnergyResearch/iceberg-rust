@@ -62,8 +62,7 @@ const META_ROOT_PATH: &str = "metadata";
 /// 3. **Delete Entry Processing**: The `delete_entries()` method is intended for future delete
 ///    operations to specify which manifest entries should be marked as deleted.
 ///
-/// This trait is public so downstream crates can build custom transaction actions that reuse
-/// Iceberg's snapshot assembly logic while supplying their own manifest-selection policy.
+/// AER_LOG: Make this public for Charon reclustering spike.
 pub trait SnapshotProduceOperation: Send + Sync {
     /// Returns the operation type that will be recorded in the snapshot summary.
     ///
@@ -104,11 +103,9 @@ impl ManifestProcess for DefaultManifestProcess {
     }
 }
 
-/// A hook for rewriting the manifest set selected by a [`SnapshotProduceOperation`].
-///
-/// This trait is public so downstream crates can reuse [`SnapshotProducer`] while supplying a
-/// custom manifest set for advanced maintenance actions.
+/// AER_LOG: Make this public for Charon reclustering spike.
 pub trait ManifestProcess: Send + Sync {
+    /// AER_LOG: Make this public for Charon reclustering spike.
     fn process_manifests(
         &self,
         snapshot_produce: &SnapshotProducer<'_>,
@@ -116,10 +113,7 @@ pub trait ManifestProcess: Send + Sync {
     ) -> Vec<ManifestFile>;
 }
 
-/// Builds the manifest list, snapshot metadata, and commit requirements for a transaction action.
-///
-/// This type is public for advanced downstream extensions that need to reuse the standard
-/// snapshot assembly flow. Most callers should continue to use the built-in transaction actions.
+/// AER_LOG: Make this public for Charon reclustering spike.
 pub struct SnapshotProducer<'a> {
     table: &'a Table,
     snapshot_id: i64,
@@ -133,7 +127,7 @@ pub struct SnapshotProducer<'a> {
 }
 
 impl<'a> SnapshotProducer<'a> {
-    /// Creates a snapshot producer for a custom transaction action.
+    /// AER_LOG: Make this public for Charon reclustering spike.
     pub fn new(
         table: &'a Table,
         commit_uuid: Uuid,
@@ -150,12 +144,12 @@ impl<'a> SnapshotProducer<'a> {
         }
     }
 
-    /// Returns the table this producer is committing against.
+    /// AER_LOG: Make this public for Charon reclustering spike.
     pub fn table(&self) -> &'a Table {
         self.table
     }
 
-    /// Validates that any supplied added files are compatible with the table schema and spec.
+    /// AER_LOG: Make this public for Charon reclustering spike.
     pub fn validate_added_data_files(&self) -> Result<()> {
         for data_file in &self.added_data_files {
             if data_file.content_type() != crate::spec::DataContentType::Data {
@@ -180,7 +174,7 @@ impl<'a> SnapshotProducer<'a> {
         Ok(())
     }
 
-    /// Validates that added files are not already referenced by the current snapshot.
+    /// AER_LOG: Make this public for Charon reclustering spike.
     pub async fn validate_duplicate_files(&self) -> Result<()> {
         let Some(current_snapshot) = self.table.metadata().current_snapshot() else {
             return Ok(());
@@ -451,9 +445,7 @@ impl<'a> SnapshotProducer<'a> {
         )
     }
 
-    /// Finished building the action and return the [`ActionCommit`] to the transaction.
-    /// Finishes snapshot assembly for a custom action and returns the resulting updates and
-    /// requirements to the surrounding transaction.
+    /// AER_LOG: Make this public for Charon reclustering spike.
     pub async fn commit<OP: SnapshotProduceOperation, MP: ManifestProcess>(
         mut self,
         snapshot_produce_operation: OP,
