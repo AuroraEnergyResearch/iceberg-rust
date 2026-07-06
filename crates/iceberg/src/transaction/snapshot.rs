@@ -115,7 +115,8 @@ pub trait ManifestProcess: Send + Sync {
 
 /// AER_LOG: Make this public for Charon reclustering spike.
 pub struct SnapshotProducer<'a> {
-    table: &'a Table,
+    /// AER_LOG: Make this public for Charon reclustering spike.
+    pub table: &'a Table,
     snapshot_id: i64,
     commit_uuid: Uuid,
     snapshot_properties: HashMap<String, String>,
@@ -142,11 +143,6 @@ impl<'a> SnapshotProducer<'a> {
             added_data_files,
             manifest_counter: (0..),
         }
-    }
-
-    /// AER_LOG: Make this public for Charon reclustering spike.
-    pub fn table(&self) -> &'a Table {
-        self.table
     }
 
     /// AER_LOG: Make this public for Charon reclustering spike.

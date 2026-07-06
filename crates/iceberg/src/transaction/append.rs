@@ -115,12 +115,12 @@ impl SnapshotProduceOperation for FastAppendOperation {
         &self,
         snapshot_produce: &SnapshotProducer<'_>,
     ) -> Result<Vec<ManifestFile>> {
-        let Some(snapshot) = snapshot_produce.table().metadata().current_snapshot() else {
+        let Some(snapshot) = snapshot_produce.table.metadata().current_snapshot() else {
             return Ok(vec![]);
         };
 
         let manifest_list = snapshot_produce
-            .table()
+            .table
             .manifest_list_reader(snapshot)
             .load()
             .await?;
