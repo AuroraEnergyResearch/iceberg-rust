@@ -68,6 +68,7 @@ use std::time::Duration;
 
 use backon::{BackoffBuilder, ExponentialBackoff, ExponentialBuilder, RetryableWithContext};
 pub use update_schema::AddColumn;
+pub use snapshot::{ManifestProcess, SnapshotProduceOperation, SnapshotProducer};
 
 use crate::error::Result;
 use crate::spec::TableProperties;
