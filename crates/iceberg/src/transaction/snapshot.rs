@@ -61,7 +61,9 @@ const META_ROOT_PATH: &str = "metadata";
 ///
 /// 3. **Delete Entry Processing**: The `delete_entries()` method is intended for future delete
 ///    operations to specify which manifest entries should be marked as deleted.
-pub(crate) trait SnapshotProduceOperation: Send + Sync {
+///
+/// AER_LOG: Make this public for Charon reclustering spike.
+pub trait SnapshotProduceOperation: Send + Sync {
     /// Returns the operation type that will be recorded in the snapshot summary.
     ///
     /// This determines what kind of operation is being performed (e.g., `Append`, `Overwrite`),
@@ -101,7 +103,9 @@ impl ManifestProcess for DefaultManifestProcess {
     }
 }
 
-pub(crate) trait ManifestProcess: Send + Sync {
+/// AER_LOG: Make this public for Charon reclustering spike.
+pub trait ManifestProcess: Send + Sync {
+    /// AER_LOG: Make this public for Charon reclustering spike.
     fn process_manifests(
         &self,
         snapshot_produce: &SnapshotProducer<'_>,
@@ -109,8 +113,10 @@ pub(crate) trait ManifestProcess: Send + Sync {
     ) -> Vec<ManifestFile>;
 }
 
-pub(crate) struct SnapshotProducer<'a> {
-    pub(crate) table: &'a Table,
+/// AER_LOG: Make this public for Charon reclustering spike.
+pub struct SnapshotProducer<'a> {
+    /// AER_LOG: Make this public for Charon reclustering spike.
+    pub table: &'a Table,
     snapshot_id: i64,
     commit_uuid: Uuid,
     snapshot_properties: HashMap<String, String>,
@@ -122,7 +128,8 @@ pub(crate) struct SnapshotProducer<'a> {
 }
 
 impl<'a> SnapshotProducer<'a> {
-    pub(crate) fn new(
+    /// AER_LOG: Make this public for Charon reclustering spike.
+    pub fn new(
         table: &'a Table,
         commit_uuid: Uuid,
         snapshot_properties: HashMap<String, String>,
@@ -138,7 +145,8 @@ impl<'a> SnapshotProducer<'a> {
         }
     }
 
-    pub(crate) fn validate_added_data_files(&self) -> Result<()> {
+    /// AER_LOG: Make this public for Charon reclustering spike.
+    pub fn validate_added_data_files(&self) -> Result<()> {
         for data_file in &self.added_data_files {
             if data_file.content_type() != crate::spec::DataContentType::Data {
                 return Err(Error::new(
@@ -162,7 +170,8 @@ impl<'a> SnapshotProducer<'a> {
         Ok(())
     }
 
-    pub(crate) async fn validate_duplicate_files(&self) -> Result<()> {
+    /// AER_LOG: Make this public for Charon reclustering spike.
+    pub async fn validate_duplicate_files(&self) -> Result<()> {
         let Some(current_snapshot) = self.table.metadata().current_snapshot() else {
             return Ok(());
         };
@@ -432,8 +441,8 @@ impl<'a> SnapshotProducer<'a> {
         )
     }
 
-    /// Finished building the action and return the [`ActionCommit`] to the transaction.
-    pub(crate) async fn commit<OP: SnapshotProduceOperation, MP: ManifestProcess>(
+    /// AER_LOG: Make this public for Charon reclustering spike.
+    pub async fn commit<OP: SnapshotProduceOperation, MP: ManifestProcess>(
         mut self,
         snapshot_produce_operation: OP,
         process: MP,
