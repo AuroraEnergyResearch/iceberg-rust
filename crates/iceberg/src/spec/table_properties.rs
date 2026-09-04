@@ -19,6 +19,8 @@ use std::collections::HashMap;
 use std::fmt::Display;
 use std::str::FromStr;
 
+use apache_avro::{Codec, DeflateSettings, ZstandardSettings};
+
 use crate::compression::CompressionCodec;
 use crate::error::{Error, ErrorKind, Result};
 
@@ -94,6 +96,37 @@ pub(crate) fn parse_metadata_file_compression(
                 CompressionCodec::gzip_default().name()
             ),
         )),
+    }
+}
+
+/// Parse the Avro compression codec for manifest files from table properties.
+pub(crate) fn parse_manifest_compression_codec(
+    properties: &HashMap<String, String>,
+) -> Result<Codec> {
+    let (key, value) = [
+        TableProperties::PROPERTY_MANIFEST_COMPRESSION_CODEC,
+        TableProperties::PROPERTY_AVRO_COMPRESSION_CODEC,
+    ]
+    .into_iter()
+    .find_map(|key| properties.get(key).map(|value| (key, value.as_str())))
+    .unwrap_or((
+        TableProperties::PROPERTY_MANIFEST_COMPRESSION_CODEC,
+        TableProperties::PROPERTY_MANIFEST_COMPRESSION_CODEC_DEFAULT,
+    ));
+
+    match value.to_ascii_lowercase().as_str() {
+        "none" | "uncompressed" => Ok(Codec::Null),
+        "gzip" => Ok(Codec::Deflate(DeflateSettings::default())),
+        "snappy" => Ok(Codec::Snappy),
+        "zstd" => Ok(Codec::Zstandard(ZstandardSettings::default())),
+        _ => Err(
+            Error::new(ErrorKind::DataInvalid, "Invalid manifest compression codec")
+                .with_context("key", key)
+                .with_context("value", value)
+                .with_source(anyhow::anyhow!(
+                    "expected one of: none, uncompressed, gzip, snappy, zstd"
+                )),
+        ),
     }
 }
 
@@ -232,6 +265,12 @@ impl TableProperties {
     pub const PROPERTY_METADATA_COMPRESSION_CODEC: &str = "write.metadata.compression-codec";
     /// Default metadata compression codec - uncompressed
     pub const PROPERTY_METADATA_COMPRESSION_CODEC_DEFAULT: &str = "none";
+    /// Property key for manifest file compression.
+    pub const PROPERTY_MANIFEST_COMPRESSION_CODEC: &str = "write.manifest.compression-codec";
+    /// Property key for Avro file compression.
+    pub const PROPERTY_AVRO_COMPRESSION_CODEC: &str = "write.avro.compression-codec";
+    /// Default manifest file compression codec.
+    pub const PROPERTY_MANIFEST_COMPRESSION_CODEC_DEFAULT: &str = "gzip";
     /// Whether to use `FanoutWriter` for partitioned tables (handles unsorted data).
     /// If false, uses `ClusteredWriter` (requires sorted data, more memory efficient).
     pub const PROPERTY_DATAFUSION_WRITE_FANOUT_ENABLED: &str = "write.datafusion.fanout.enabled";
@@ -384,6 +423,8 @@ impl TryFrom<&HashMap<String, String>> for TableProperties {
 
 #[cfg(test)]
 mod tests {
+    use apache_avro::{Codec, DeflateSettings, ZstandardSettings};
+
     use super::*;
     use crate::compression::CompressionCodec;
 
@@ -718,6 +759,104 @@ mod tests {
                 err_msg.contains("Only 'none' and 'gzip' are supported"),
                 "Expected error message to contain supported codecs, got: {err_msg}"
             );
+        }
+    }
+
+    #[test]
+    fn test_parse_manifest_compression_codec_precedence() {
+        let props = HashMap::from([
+            (
+                TableProperties::PROPERTY_MANIFEST_COMPRESSION_CODEC.to_string(),
+                "snappy".to_string(),
+            ),
+            (
+                TableProperties::PROPERTY_AVRO_COMPRESSION_CODEC.to_string(),
+                "zstd".to_string(),
+            ),
+        ]);
+
+        assert_eq!(
+            parse_manifest_compression_codec(&props).unwrap(),
+            Codec::Snappy
+        );
+    }
+
+    #[test]
+    fn test_parse_manifest_compression_codec_avro_fallback_and_default() {
+        let props = HashMap::from([(
+            TableProperties::PROPERTY_AVRO_COMPRESSION_CODEC.to_string(),
+            "zstd".to_string(),
+        )]);
+
+        assert_eq!(
+            parse_manifest_compression_codec(&props).unwrap(),
+            Codec::Zstandard(ZstandardSettings::default())
+        );
+        assert_eq!(
+            parse_manifest_compression_codec(&HashMap::new()).unwrap(),
+            Codec::Deflate(DeflateSettings::default())
+        );
+    }
+
+    #[test]
+    fn test_parse_manifest_compression_codec_valid_values_are_case_insensitive() {
+        for (value, expected) in [
+            ("NoNe", Codec::Null),
+            ("UnCoMpReSsEd", Codec::Null),
+            ("GzIp", Codec::Deflate(DeflateSettings::default())),
+            ("SnApPy", Codec::Snappy),
+            ("ZsTd", Codec::Zstandard(ZstandardSettings::default())),
+        ] {
+            let props = HashMap::from([(
+                TableProperties::PROPERTY_MANIFEST_COMPRESSION_CODEC.to_string(),
+                value.to_string(),
+            )]);
+
+            assert_eq!(parse_manifest_compression_codec(&props).unwrap(), expected);
+        }
+    }
+
+    #[test]
+    fn test_parse_manifest_compression_codec_invalid_manifest_value_does_not_fall_back() {
+        for value in ["", "lz4"] {
+            let props = HashMap::from([
+                (
+                    TableProperties::PROPERTY_MANIFEST_COMPRESSION_CODEC.to_string(),
+                    value.to_string(),
+                ),
+                (
+                    TableProperties::PROPERTY_AVRO_COMPRESSION_CODEC.to_string(),
+                    "snappy".to_string(),
+                ),
+            ]);
+
+            let error = parse_manifest_compression_codec(&props).unwrap_err();
+            assert_eq!(error.kind(), ErrorKind::DataInvalid);
+            assert!(
+                error
+                    .to_string()
+                    .contains("key: write.manifest.compression-codec")
+            );
+            assert!(error.to_string().contains(&format!("value: {value}")));
+        }
+    }
+
+    #[test]
+    fn test_parse_manifest_compression_codec_invalid_avro_value_does_not_use_default() {
+        for value in ["", "deflate"] {
+            let props = HashMap::from([(
+                TableProperties::PROPERTY_AVRO_COMPRESSION_CODEC.to_string(),
+                value.to_string(),
+            )]);
+
+            let error = parse_manifest_compression_codec(&props).unwrap_err();
+            assert_eq!(error.kind(), ErrorKind::DataInvalid);
+            assert!(
+                error
+                    .to_string()
+                    .contains("key: write.avro.compression-codec")
+            );
+            assert!(error.to_string().contains(&format!("value: {value}")));
         }
     }
 
