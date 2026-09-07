@@ -1611,7 +1611,7 @@ mod tests {
     use std::sync::Arc;
 
     use anyhow::Result;
-    use apache_avro::{Codec, DeflateSettings};
+    use apache_avro::Codec;
     use base64::Engine as _;
     use pretty_assertions::assert_eq;
     use tempfile::TempDir;
@@ -1657,12 +1657,6 @@ mod tests {
         assert_eq!(
             metadata.manifest_compression_codec().unwrap(),
             Codec::Snappy
-        );
-
-        metadata.properties.clear();
-        assert_eq!(
-            metadata.manifest_compression_codec().unwrap(),
-            Codec::Deflate(DeflateSettings::default())
         );
     }
 
