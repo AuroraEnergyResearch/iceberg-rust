@@ -263,7 +263,7 @@ impl TableProperties {
     /// Property key for Avro file compression.
     pub const PROPERTY_AVRO_COMPRESSION_CODEC: &str = "write.avro.compression-codec";
     /// Default Avro file compression codec.
-    pub const PROPERTY_AVRO_COMPRESSION_CODEC_DEFAULT: &str = "none";
+    pub const PROPERTY_AVRO_COMPRESSION_CODEC_DEFAULT: &str = "gzip";
     /// Whether to use `FanoutWriter` for partitioned tables (handles unsorted data).
     /// If false, uses `ClusteredWriter` (requires sorted data, more memory efficient).
     pub const PROPERTY_DATAFUSION_WRITE_FANOUT_ENABLED: &str = "write.datafusion.fanout.enabled";
@@ -765,6 +765,14 @@ mod tests {
         assert_eq!(
             parse_manifest_compression_codec(&props).unwrap(),
             Codec::Zstandard(ZstandardSettings::default())
+        );
+    }
+
+    #[test]
+    fn test_parse_manifest_compression_codec_defaults_to_gzip() {
+        assert_eq!(
+            parse_manifest_compression_codec(&HashMap::new()).unwrap(),
+            Codec::Deflate(DeflateSettings::default())
         );
     }
 
