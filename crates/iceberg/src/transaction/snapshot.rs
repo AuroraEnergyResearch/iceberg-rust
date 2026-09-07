@@ -258,7 +258,8 @@ impl<'a> SnapshotProducer<'a> {
                 .default_partition_spec()
                 .as_ref()
                 .clone(),
-        );
+        )
+        .with_codec(self.table.metadata().manifest_compression_codec()?);
         match self.table.metadata().format_version() {
             FormatVersion::V1 => Ok(builder.build_v1()),
             FormatVersion::V2 => match content {
@@ -526,5 +527,43 @@ impl<'a> SnapshotProducer<'a> {
         ];
 
         Ok(ActionCommit::new(updates, requirements))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+    use std::sync::Arc;
+
+    use uuid::Uuid;
+
+    use super::SnapshotProducer;
+    use crate::ErrorKind;
+    use crate::spec::{ManifestContentType, TableProperties};
+    use crate::transaction::tests::make_v2_minimal_table;
+
+    #[test]
+    fn test_new_manifest_writer_propagates_invalid_compression_codec() {
+        let table = make_v2_minimal_table();
+        let metadata = table
+            .metadata()
+            .clone()
+            .into_builder(None)
+            .set_properties(HashMap::from([(
+                TableProperties::PROPERTY_AVRO_COMPRESSION_CODEC.to_string(),
+                "invalid".to_string(),
+            )]))
+            .unwrap()
+            .build()
+            .unwrap()
+            .metadata;
+        let table = table.with_metadata(Arc::new(metadata));
+        let mut producer = SnapshotProducer::new(&table, Uuid::now_v7(), HashMap::new(), vec![]);
+
+        let error = match producer.new_manifest_writer(ManifestContentType::Data) {
+            Ok(_) => panic!("invalid manifest compression codec must fail"),
+            Err(error) => error,
+        };
+        assert_eq!(error.kind(), ErrorKind::DataInvalid);
     }
 }

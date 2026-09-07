@@ -103,16 +103,11 @@ pub(crate) fn parse_metadata_file_compression(
 pub(crate) fn parse_manifest_compression_codec(
     properties: &HashMap<String, String>,
 ) -> Result<Codec> {
-    let (key, value) = [
-        TableProperties::PROPERTY_MANIFEST_COMPRESSION_CODEC,
-        TableProperties::PROPERTY_AVRO_COMPRESSION_CODEC,
-    ]
-    .into_iter()
-    .find_map(|key| properties.get(key).map(|value| (key, value.as_str())))
-    .unwrap_or((
-        TableProperties::PROPERTY_MANIFEST_COMPRESSION_CODEC,
-        TableProperties::PROPERTY_MANIFEST_COMPRESSION_CODEC_DEFAULT,
-    ));
+    let key = TableProperties::PROPERTY_AVRO_COMPRESSION_CODEC;
+    let value = properties
+        .get(key)
+        .map(String::as_str)
+        .unwrap_or(TableProperties::PROPERTY_AVRO_COMPRESSION_CODEC_DEFAULT);
 
     match value.to_ascii_lowercase().as_str() {
         "none" | "uncompressed" => Ok(Codec::Null),
@@ -265,12 +260,10 @@ impl TableProperties {
     pub const PROPERTY_METADATA_COMPRESSION_CODEC: &str = "write.metadata.compression-codec";
     /// Default metadata compression codec - uncompressed
     pub const PROPERTY_METADATA_COMPRESSION_CODEC_DEFAULT: &str = "none";
-    /// Property key for manifest file compression.
-    pub const PROPERTY_MANIFEST_COMPRESSION_CODEC: &str = "write.manifest.compression-codec";
     /// Property key for Avro file compression.
     pub const PROPERTY_AVRO_COMPRESSION_CODEC: &str = "write.avro.compression-codec";
-    /// Default manifest file compression codec.
-    pub const PROPERTY_MANIFEST_COMPRESSION_CODEC_DEFAULT: &str = "gzip";
+    /// Default Avro file compression codec.
+    pub const PROPERTY_AVRO_COMPRESSION_CODEC_DEFAULT: &str = "none";
     /// Whether to use `FanoutWriter` for partitioned tables (handles unsorted data).
     /// If false, uses `ClusteredWriter` (requires sorted data, more memory efficient).
     pub const PROPERTY_DATAFUSION_WRITE_FANOUT_ENABLED: &str = "write.datafusion.fanout.enabled";
@@ -763,26 +756,7 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_manifest_compression_codec_precedence() {
-        let props = HashMap::from([
-            (
-                TableProperties::PROPERTY_MANIFEST_COMPRESSION_CODEC.to_string(),
-                "snappy".to_string(),
-            ),
-            (
-                TableProperties::PROPERTY_AVRO_COMPRESSION_CODEC.to_string(),
-                "zstd".to_string(),
-            ),
-        ]);
-
-        assert_eq!(
-            parse_manifest_compression_codec(&props).unwrap(),
-            Codec::Snappy
-        );
-    }
-
-    #[test]
-    fn test_parse_manifest_compression_codec_avro_fallback_and_default() {
+    fn test_parse_manifest_compression_codec_avro() {
         let props = HashMap::from([(
             TableProperties::PROPERTY_AVRO_COMPRESSION_CODEC.to_string(),
             "zstd".to_string(),
@@ -791,10 +765,6 @@ mod tests {
         assert_eq!(
             parse_manifest_compression_codec(&props).unwrap(),
             Codec::Zstandard(ZstandardSettings::default())
-        );
-        assert_eq!(
-            parse_manifest_compression_codec(&HashMap::new()).unwrap(),
-            Codec::Deflate(DeflateSettings::default())
         );
     }
 
@@ -808,36 +778,11 @@ mod tests {
             ("ZsTd", Codec::Zstandard(ZstandardSettings::default())),
         ] {
             let props = HashMap::from([(
-                TableProperties::PROPERTY_MANIFEST_COMPRESSION_CODEC.to_string(),
+                TableProperties::PROPERTY_AVRO_COMPRESSION_CODEC.to_string(),
                 value.to_string(),
             )]);
 
             assert_eq!(parse_manifest_compression_codec(&props).unwrap(), expected);
-        }
-    }
-
-    #[test]
-    fn test_parse_manifest_compression_codec_invalid_manifest_value_does_not_fall_back() {
-        for value in ["", "lz4"] {
-            let props = HashMap::from([
-                (
-                    TableProperties::PROPERTY_MANIFEST_COMPRESSION_CODEC.to_string(),
-                    value.to_string(),
-                ),
-                (
-                    TableProperties::PROPERTY_AVRO_COMPRESSION_CODEC.to_string(),
-                    "snappy".to_string(),
-                ),
-            ]);
-
-            let error = parse_manifest_compression_codec(&props).unwrap_err();
-            assert_eq!(error.kind(), ErrorKind::DataInvalid);
-            assert!(
-                error
-                    .to_string()
-                    .contains("key: write.manifest.compression-codec")
-            );
-            assert!(error.to_string().contains(&format!("value: {value}")));
         }
     }
 
