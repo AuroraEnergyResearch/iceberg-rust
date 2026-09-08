@@ -20,6 +20,7 @@
 use std::fmt;
 use std::io::{Read, Write};
 
+use apache_avro::{Codec as AvroCodec, DeflateSettings, ZstandardSettings};
 use flate2::Compression;
 use flate2::read::GzDecoder;
 use flate2::write::GzEncoder;
@@ -72,6 +73,20 @@ impl CompressionCodec {
             CompressionCodec::Zstd(_) => "zstd",
             CompressionCodec::Gzip(_) => "gzip",
             CompressionCodec::Snappy => "snappy",
+        }
+    }
+
+    /// Converts this Iceberg codec to the corresponding Avro codec.
+    pub(crate) fn to_avro(self) -> Result<AvroCodec> {
+        match self {
+            CompressionCodec::None => Ok(AvroCodec::Null),
+            CompressionCodec::Gzip(_) => Ok(AvroCodec::Deflate(DeflateSettings::default())),
+            CompressionCodec::Snappy => Ok(AvroCodec::Snappy),
+            CompressionCodec::Zstd(_) => Ok(AvroCodec::Zstandard(ZstandardSettings::default())),
+            CompressionCodec::Lz4 => Err(Error::new(
+                ErrorKind::FeatureUnsupported,
+                "LZ4 is not supported by Avro",
+            )),
         }
     }
 }
@@ -190,6 +205,8 @@ impl CompressionCodec {
 
 #[cfg(test)]
 mod tests {
+    use apache_avro::{Codec as AvroCodec, DeflateSettings, ZstandardSettings};
+
     use super::CompressionCodec;
 
     #[tokio::test]
@@ -272,5 +289,26 @@ mod tests {
         );
         assert_eq!(CompressionCodec::Gzip(9).to_string(), "Gzip(level=9)");
         assert_eq!(CompressionCodec::Snappy.to_string(), "Snappy");
+    }
+
+    #[test]
+    fn test_avro_codec_mapping() {
+        assert_eq!(CompressionCodec::None.to_avro().unwrap(), AvroCodec::Null);
+        assert_eq!(
+            CompressionCodec::gzip_default().to_avro().unwrap(),
+            AvroCodec::Deflate(DeflateSettings::default())
+        );
+        assert_eq!(
+            CompressionCodec::Snappy.to_avro().unwrap(),
+            AvroCodec::Snappy
+        );
+        assert_eq!(
+            CompressionCodec::zstd_default().to_avro().unwrap(),
+            AvroCodec::Zstandard(ZstandardSettings::default())
+        );
+        assert_eq!(
+            CompressionCodec::Lz4.to_avro().unwrap_err().kind(),
+            crate::ErrorKind::FeatureUnsupported
+        );
     }
 }

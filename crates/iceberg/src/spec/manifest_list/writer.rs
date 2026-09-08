@@ -25,6 +25,7 @@ use super::_const_schema::{
 };
 use super::_serde::{ManifestFileV1, ManifestFileV2, ManifestFileV3};
 use super::{FormatVersion, ManifestContentType, ManifestFile, UNASSIGNED_SEQUENCE_NUMBER};
+use crate::compression::CompressionCodec;
 use crate::error::Result;
 use crate::io::FileWrite;
 use crate::{Error, ErrorKind};
@@ -52,10 +53,10 @@ impl ManifestListWriterBuilder {
         }
     }
 
-    /// Set the Avro compression codec used to write the manifest list.
-    pub fn with_codec(mut self, codec: Codec) -> Self {
-        self.codec = codec;
-        self
+    /// Set the Iceberg compression codec used to write the manifest list.
+    pub fn with_codec(mut self, codec: CompressionCodec) -> Result<Self> {
+        self.codec = codec.to_avro()?;
+        Ok(self)
     }
 
     /// Build a manifest list writer for format version 1.
@@ -374,10 +375,11 @@ mod test {
     use std::fs;
     use std::path::Path;
 
-    use apache_avro::{Codec, Schema as AvroSchema, from_avro_datum};
+    use apache_avro::{Schema as AvroSchema, from_avro_datum};
     use tempfile::TempDir;
 
     use super::{ManifestListWriter, ManifestListWriterBuilder};
+    use crate::compression::CompressionCodec;
     use crate::io::{FileIO, FileWrite};
     use crate::spec::{
         Datum, FieldSummary, ManifestContentType, ManifestFile, ManifestList,
@@ -422,6 +424,17 @@ mod test {
 
         let bs = fs::read(path).unwrap();
 
+        let mut header = &bs[4..];
+        let metadata =
+            from_avro_datum(&AvroSchema::map(AvroSchema::Bytes), &mut header, None).unwrap();
+        let apache_avro::types::Value::Map(metadata) = metadata else {
+            panic!("manifest list header metadata must be an Avro map");
+        };
+        assert_eq!(
+            metadata.get("avro.codec"),
+            Some(&apache_avro::types::Value::Bytes(b"null".to_vec()))
+        );
+
         let manifest_list =
             ManifestList::parse_with_version(&bs, crate::spec::FormatVersion::V1).unwrap();
         assert_eq!(manifest_list, expected_manifest_list);
@@ -436,7 +449,8 @@ mod test {
         let file_writer = file_writer(&path, FileIO::new_with_fs()).await;
 
         ManifestListWriterBuilder::new(file_writer, 1, None)
-            .with_codec(Codec::Snappy)
+            .with_codec(CompressionCodec::Snappy)
+            .unwrap()
             .build_v2(1)
             .close()
             .await

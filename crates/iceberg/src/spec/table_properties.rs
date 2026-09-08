@@ -19,8 +19,6 @@ use std::collections::HashMap;
 use std::fmt::Display;
 use std::str::FromStr;
 
-use apache_avro::{Codec, DeflateSettings, ZstandardSettings};
-
 use crate::compression::CompressionCodec;
 use crate::error::{Error, ErrorKind, Result};
 
@@ -99,10 +97,10 @@ pub(crate) fn parse_metadata_file_compression(
     }
 }
 
-/// Parse the Avro compression codec for manifest files from table properties.
+/// Parse the Iceberg compression codec for manifest files from table properties.
 pub(crate) fn parse_manifest_compression_codec(
     properties: &HashMap<String, String>,
-) -> Result<Codec> {
+) -> Result<CompressionCodec> {
     let key = TableProperties::PROPERTY_AVRO_COMPRESSION_CODEC;
     let value = properties
         .get(key)
@@ -110,10 +108,11 @@ pub(crate) fn parse_manifest_compression_codec(
         .unwrap_or(TableProperties::PROPERTY_AVRO_COMPRESSION_CODEC_DEFAULT);
 
     match value.to_ascii_lowercase().as_str() {
-        "none" | "uncompressed" => Ok(Codec::Null),
-        "gzip" => Ok(Codec::Deflate(DeflateSettings::default())),
-        "snappy" => Ok(Codec::Snappy),
-        "zstd" => Ok(Codec::Zstandard(ZstandardSettings::default())),
+        // `none` remains a compatibility alias for the Iceberg `uncompressed` value.
+        "none" | "uncompressed" => Ok(CompressionCodec::None),
+        "gzip" => Ok(CompressionCodec::gzip_default()),
+        "snappy" => Ok(CompressionCodec::Snappy),
+        "zstd" => Ok(CompressionCodec::zstd_default()),
         _ => Err(
             Error::new(ErrorKind::DataInvalid, "Invalid manifest compression codec")
                 .with_context("key", key)
@@ -416,8 +415,6 @@ impl TryFrom<&HashMap<String, String>> for TableProperties {
 
 #[cfg(test)]
 mod tests {
-    use apache_avro::{Codec, DeflateSettings, ZstandardSettings};
-
     use super::*;
     use crate::compression::CompressionCodec;
 
@@ -764,7 +761,7 @@ mod tests {
 
         assert_eq!(
             parse_manifest_compression_codec(&props).unwrap(),
-            Codec::Zstandard(ZstandardSettings::default())
+            CompressionCodec::zstd_default()
         );
     }
 
@@ -772,18 +769,18 @@ mod tests {
     fn test_parse_manifest_compression_codec_defaults_to_gzip() {
         assert_eq!(
             parse_manifest_compression_codec(&HashMap::new()).unwrap(),
-            Codec::Deflate(DeflateSettings::default())
+            CompressionCodec::gzip_default()
         );
     }
 
     #[test]
     fn test_parse_manifest_compression_codec_valid_values_are_case_insensitive() {
         for (value, expected) in [
-            ("NoNe", Codec::Null),
-            ("UnCoMpReSsEd", Codec::Null),
-            ("GzIp", Codec::Deflate(DeflateSettings::default())),
-            ("SnApPy", Codec::Snappy),
-            ("ZsTd", Codec::Zstandard(ZstandardSettings::default())),
+            ("NoNe", CompressionCodec::None),
+            ("UnCoMpReSsEd", CompressionCodec::None),
+            ("GzIp", CompressionCodec::gzip_default()),
+            ("SnApPy", CompressionCodec::Snappy),
+            ("ZsTd", CompressionCodec::zstd_default()),
         ] {
             let props = HashMap::from([(
                 TableProperties::PROPERTY_AVRO_COMPRESSION_CODEC.to_string(),
