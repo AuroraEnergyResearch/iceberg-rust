@@ -61,7 +61,9 @@ const META_ROOT_PATH: &str = "metadata";
 ///
 /// 3. **Delete Entry Processing**: The `delete_entries()` method is intended for future delete
 ///    operations to specify which manifest entries should be marked as deleted.
-pub(crate) trait SnapshotProduceOperation: Send + Sync {
+///
+/// AER_LOG: Make this public for Charon reclustering spike.
+pub trait SnapshotProduceOperation: Send + Sync {
     /// Returns the operation type that will be recorded in the snapshot summary.
     ///
     /// This determines what kind of operation is being performed (e.g., `Append`, `Overwrite`),
@@ -101,7 +103,9 @@ impl ManifestProcess for DefaultManifestProcess {
     }
 }
 
-pub(crate) trait ManifestProcess: Send + Sync {
+/// AER_LOG: Make this public for Charon reclustering spike.
+pub trait ManifestProcess: Send + Sync {
+    /// AER_LOG: Make this public for Charon reclustering spike.
     fn process_manifests(
         &self,
         snapshot_produce: &SnapshotProducer<'_>,
@@ -109,9 +113,10 @@ pub(crate) trait ManifestProcess: Send + Sync {
     ) -> Vec<ManifestFile>;
 }
 
-pub(crate) struct SnapshotProducer<'a> {
-    pub(crate) table: &'a Table,
-    manifest_compression_codec: apache_avro::Codec,
+/// AER_LOG: Make this public for Charon reclustering spike.
+pub struct SnapshotProducer<'a> {
+    /// AER_LOG: Make this public for Charon reclustering spike.
+    pub table: &'a Table,
     snapshot_id: i64,
     commit_uuid: Uuid,
     snapshot_properties: HashMap<String, String>,
@@ -123,24 +128,25 @@ pub(crate) struct SnapshotProducer<'a> {
 }
 
 impl<'a> SnapshotProducer<'a> {
-    pub(crate) fn new(
+    /// AER_LOG: Make this public for Charon reclustering spike.
+    pub fn new(
         table: &'a Table,
         commit_uuid: Uuid,
         snapshot_properties: HashMap<String, String>,
         added_data_files: Vec<DataFile>,
-    ) -> Result<Self> {
-        Ok(Self {
+    ) -> Self {
+        Self {
             table,
-            manifest_compression_codec: table.metadata().manifest_compression_codec()?,
             snapshot_id: Self::generate_unique_snapshot_id(table),
             commit_uuid,
             snapshot_properties,
             added_data_files,
             manifest_counter: (0..),
-        })
+        }
     }
 
-    pub(crate) fn validate_added_data_files(&self) -> Result<()> {
+    /// AER_LOG: Make this public for Charon reclustering spike.
+    pub fn validate_added_data_files(&self) -> Result<()> {
         for data_file in &self.added_data_files {
             if data_file.content_type() != crate::spec::DataContentType::Data {
                 return Err(Error::new(
@@ -164,7 +170,8 @@ impl<'a> SnapshotProducer<'a> {
         Ok(())
     }
 
-    pub(crate) async fn validate_duplicate_files(&self) -> Result<()> {
+    /// AER_LOG: Make this public for Charon reclustering spike.
+    pub async fn validate_duplicate_files(&self) -> Result<()> {
         let Some(current_snapshot) = self.table.metadata().current_snapshot() else {
             return Ok(());
         };
@@ -261,7 +268,7 @@ impl<'a> SnapshotProducer<'a> {
                 .as_ref()
                 .clone(),
         )
-        .with_codec(self.manifest_compression_codec);
+        .with_codec(self.table.metadata().manifest_compression_codec()?);
         match self.table.metadata().format_version() {
             FormatVersion::V1 => Ok(builder.build_v1()),
             FormatVersion::V2 => match content {
@@ -435,8 +442,8 @@ impl<'a> SnapshotProducer<'a> {
         )
     }
 
-    /// Finished building the action and return the [`ActionCommit`] to the transaction.
-    pub(crate) async fn commit<OP: SnapshotProduceOperation, MP: ManifestProcess>(
+    /// AER_LOG: Make this public for Charon reclustering spike.
+    pub async fn commit<OP: SnapshotProduceOperation, MP: ManifestProcess>(
         mut self,
         snapshot_produce_operation: OP,
         process: MP,
@@ -455,7 +462,7 @@ impl<'a> SnapshotProducer<'a> {
             self.snapshot_id,
             self.table.metadata().current_snapshot_id(),
         )
-        .with_codec(self.manifest_compression_codec);
+        .with_codec(self.table.metadata().manifest_compression_codec()?)?;
         let mut manifest_list_writer = match self.table.metadata().format_version() {
             FormatVersion::V1 => manifest_list_writer.build_v1(),
             FormatVersion::V2 => manifest_list_writer.build_v2(next_seq_num),
