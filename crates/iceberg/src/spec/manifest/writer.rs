@@ -19,7 +19,7 @@ use std::cmp::min;
 use std::future::Future;
 use std::pin::Pin;
 
-use apache_avro::{Codec, Writer as AvroWriter, to_value};
+use apache_avro::{Writer as AvroWriter, to_value};
 use bytes::Bytes;
 use itertools::Itertools;
 use serde_json::to_vec;
@@ -28,6 +28,7 @@ use super::{
     Datum, FormatVersion, ManifestContentType, PartitionSpec, PrimitiveType,
     UNASSIGNED_SEQUENCE_NUMBER,
 };
+use crate::compression::CompressionCodec;
 use crate::encryption::EncryptedOutputFile;
 use crate::error::Result;
 use crate::io::{FileWrite, OutputFile};
@@ -53,7 +54,7 @@ pub struct ManifestWriterBuilder {
     key_metadata: Option<Vec<u8>>,
     schema: SchemaRef,
     partition_spec: PartitionSpec,
-    codec: Codec,
+    codec: CompressionCodec,
 }
 
 impl ManifestWriterBuilder {
@@ -72,7 +73,7 @@ impl ManifestWriterBuilder {
             key_metadata: None,
             schema,
             partition_spec,
-            codec: Codec::Null,
+            codec: CompressionCodec::None,
         }
     }
 
@@ -94,12 +95,12 @@ impl ManifestWriterBuilder {
             key_metadata,
             schema,
             partition_spec,
-            codec: Codec::Null,
+            codec: CompressionCodec::None,
         })
     }
 
-    /// Set the Avro compression codec used to write the manifest file.
-    pub fn with_codec(mut self, codec: Codec) -> Self {
+    /// Set the Iceberg compression codec used to write the manifest file.
+    pub fn with_codec(mut self, codec: CompressionCodec) -> Self {
         self.codec = codec;
         self
     }
@@ -230,7 +231,7 @@ pub struct ManifestWriter {
     manifest_entries: Vec<ManifestEntry>,
 
     metadata: ManifestMetadata,
-    codec: Codec,
+    codec: CompressionCodec,
 }
 
 impl ManifestWriter {
@@ -242,7 +243,7 @@ impl ManifestWriter {
         key_metadata: Option<Vec<u8>>,
         metadata: ManifestMetadata,
         first_row_id: Option<u64>,
-        codec: Codec,
+        codec: CompressionCodec,
     ) -> Self {
         Self {
             writer_future,
@@ -468,7 +469,8 @@ impl ManifestWriter {
             // Manifest schema did not change between V2 and V3
             FormatVersion::V2 | FormatVersion::V3 => manifest_schema_v2(&partition_type)?,
         };
-        let mut avro_writer = AvroWriter::with_codec(&avro_schema, Vec::new(), self.codec);
+        let mut avro_writer =
+            AvroWriter::with_codec(&avro_schema, Vec::new(), self.codec.to_avro()?);
         avro_writer.add_user_metadata(
             "schema".to_string(),
             to_vec(table_schema).map_err(|err| {
@@ -633,7 +635,7 @@ mod tests {
             .unwrap();
 
         ManifestWriterBuilder::new(output_file, Some(1), schema, partition_spec)
-            .with_codec(Codec::Snappy)
+            .with_codec(CompressionCodec::Snappy)
             .build_v2_data()
             .write_manifest_file()
             .await
@@ -653,6 +655,39 @@ mod tests {
         assert_eq!(
             metadata.get("avro.codec"),
             Some(&apache_avro::types::Value::Bytes(b"snappy".to_vec()))
+        );
+    }
+
+    #[tokio::test]
+    async fn test_manifest_writer_builder_defaults_to_uncompressed() {
+        let schema = Arc::new(Schema::builder().build().unwrap());
+        let partition_spec = PartitionSpec::builder(schema.clone()).build().unwrap();
+        let tmp_dir = TempDir::new().unwrap();
+        let path = tmp_dir.path().join("manifest.avro");
+        let output_file = FileIO::new_with_fs()
+            .new_output(path.to_str().unwrap())
+            .unwrap();
+
+        ManifestWriterBuilder::new(output_file, Some(1), schema, partition_spec)
+            .build_v2_data()
+            .write_manifest_file()
+            .await
+            .unwrap();
+
+        let bytes = fs::read(path).unwrap();
+        let mut header = &bytes[4..];
+        let metadata = apache_avro::from_avro_datum(
+            &apache_avro::Schema::map(apache_avro::Schema::Bytes),
+            &mut header,
+            None,
+        )
+        .unwrap();
+        let apache_avro::types::Value::Map(metadata) = metadata else {
+            panic!("manifest header metadata must be an Avro map");
+        };
+        assert_eq!(
+            metadata.get("avro.codec"),
+            Some(&apache_avro::types::Value::Bytes(b"null".to_vec()))
         );
     }
 

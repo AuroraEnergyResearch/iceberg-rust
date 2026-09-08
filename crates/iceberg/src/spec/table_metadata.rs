@@ -25,7 +25,6 @@ use std::hash::Hash;
 use std::sync::Arc;
 
 use _serde::TableMetadataEnum;
-use apache_avro::Codec;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_repr::{Deserialize_repr, Serialize_repr};
@@ -377,8 +376,8 @@ impl TableMetadata {
         parse_metadata_file_compression(&self.properties)
     }
 
-    /// Returns the Avro compression codec for manifest files from table properties.
-    pub fn manifest_compression_codec(&self) -> Result<Codec> {
+    /// Returns the Iceberg compression codec for manifest files from table properties.
+    pub fn manifest_compression_codec(&self) -> Result<CompressionCodec> {
         parse_manifest_compression_codec(&self.properties)
     }
 
@@ -1611,7 +1610,6 @@ mod tests {
     use std::sync::Arc;
 
     use anyhow::Result;
-    use apache_avro::Codec;
     use base64::Engine as _;
     use pretty_assertions::assert_eq;
     use tempfile::TempDir;
@@ -1656,7 +1654,7 @@ mod tests {
         )]);
         assert_eq!(
             metadata.manifest_compression_codec().unwrap(),
-            Codec::Snappy
+            CompressionCodec::Snappy
         );
     }
 
