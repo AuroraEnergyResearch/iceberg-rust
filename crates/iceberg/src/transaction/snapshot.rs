@@ -462,7 +462,7 @@ impl<'a> SnapshotProducer<'a> {
             self.snapshot_id,
             self.table.metadata().current_snapshot_id(),
         )
-        .with_codec(self.table.metadata().manifest_compression_codec()?)?;
+        .with_codec(self.table.metadata().manifest_compression_codec()?);
         let mut manifest_list_writer = match self.table.metadata().format_version() {
             FormatVersion::V1 => manifest_list_writer.build_v1(),
             FormatVersion::V2 => manifest_list_writer.build_v2(next_seq_num),
