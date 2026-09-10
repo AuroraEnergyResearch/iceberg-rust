@@ -145,15 +145,16 @@ mod tests {
     use std::fs;
     use std::sync::Arc;
 
+    use apache_avro::{Schema as AvroSchema, from_avro_datum};
     use minijinja::{AutoEscape, Environment, Value, context};
     use tempfile::TempDir;
     use uuid::Uuid;
 
     use crate::io::FileIO;
     use crate::spec::{
-        DataContentType, DataFileBuilder, DataFileFormat, Literal, MAIN_BRANCH, ManifestEntry,
-        ManifestListWriter, ManifestStatus, ManifestWriterBuilder, SnapshotRef, Struct,
-        TableMetadata,
+        DataContentType, DataFileBuilder, DataFileFormat, Literal, MAIN_BRANCH, Manifest,
+        ManifestEntry, ManifestListWriter, ManifestStatus, ManifestWriterBuilder, SnapshotRef,
+        Struct, TableMetadata, TableProperties,
     };
     use crate::table::Table;
     use crate::test_utils::test_runtime;
@@ -583,5 +584,167 @@ mod tests {
             manifest.entries()[0].snapshot_id().unwrap()
         );
         assert_eq!(data_file, *manifest.entries()[0].data_file());
+    }
+
+    #[tokio::test]
+    async fn test_fast_append_writes_manifest_and_manifest_list_with_default_codec() {
+        let table = make_v2_minimal_table();
+        assert!(
+            !table
+                .metadata()
+                .properties()
+                .contains_key(TableProperties::PROPERTY_AVRO_COMPRESSION_CODEC)
+        );
+        let data_file = DataFileBuilder::default()
+            .content(DataContentType::Data)
+            .file_path("test/default-compressed.parquet".to_string())
+            .file_format(DataFileFormat::Parquet)
+            .file_size_in_bytes(100)
+            .record_count(1)
+            .partition_spec_id(table.metadata().default_partition_spec_id())
+            .partition(Struct::from_iter([Some(Literal::long(300))]))
+            .build()
+            .unwrap();
+
+        let action = Transaction::new(&table)
+            .fast_append()
+            .add_data_files(vec![data_file]);
+        let mut action_commit = Arc::new(action).commit(&table).await.unwrap();
+        let updates = action_commit.take_updates();
+        let snapshot = if let TableUpdate::AddSnapshot { snapshot } = &updates[0] {
+            SnapshotRef::new(snapshot.clone())
+        } else {
+            unreachable!("first update of a fast append should be AddSnapshot")
+        };
+        let manifest_list = table.manifest_list_reader(&snapshot).load().await.unwrap();
+
+        let manifest_list_bytes = table
+            .file_io()
+            .new_input(snapshot.manifest_list())
+            .unwrap()
+            .read()
+            .await
+            .unwrap();
+        assert_eq!(&manifest_list_bytes[..4], b"Obj\x01");
+        let mut manifest_list_header = &manifest_list_bytes[4..];
+        let manifest_list_metadata = from_avro_datum(
+            &AvroSchema::map(AvroSchema::Bytes),
+            &mut manifest_list_header,
+            None,
+        )
+        .unwrap();
+        let apache_avro::types::Value::Map(manifest_list_metadata) = manifest_list_metadata else {
+            panic!("manifest list header metadata must be an Avro map");
+        };
+        assert_eq!(
+            manifest_list_metadata.get("avro.codec"),
+            Some(&apache_avro::types::Value::Bytes(b"deflate".to_vec()))
+        );
+
+        let manifest_file = &manifest_list.entries()[0];
+        let bytes = table
+            .file_io()
+            .new_input(&manifest_file.manifest_path)
+            .unwrap()
+            .read()
+            .await
+            .unwrap();
+        assert_eq!(&bytes[..4], b"Obj\x01");
+        let mut header = &bytes[4..];
+        let metadata =
+            from_avro_datum(&AvroSchema::map(AvroSchema::Bytes), &mut header, None).unwrap();
+        let apache_avro::types::Value::Map(metadata) = metadata else {
+            panic!("manifest header metadata must be an Avro map");
+        };
+        assert_eq!(
+            metadata.get("avro.codec"),
+            Some(&apache_avro::types::Value::Bytes(b"deflate".to_vec()))
+        );
+    }
+
+    #[tokio::test]
+    async fn test_fast_append_writes_manifest_and_manifest_list_with_configured_codec() {
+        let table = make_v2_minimal_table();
+        let metadata = table
+            .metadata()
+            .clone()
+            .into_builder(None)
+            .set_properties(HashMap::from([(
+                TableProperties::PROPERTY_AVRO_COMPRESSION_CODEC.to_string(),
+                "snappy".to_string(),
+            )]))
+            .unwrap()
+            .build()
+            .unwrap()
+            .metadata;
+        let table = table.with_metadata(Arc::new(metadata));
+        let data_file = DataFileBuilder::default()
+            .content(DataContentType::Data)
+            .file_path("test/compressed.parquet".to_string())
+            .file_format(DataFileFormat::Parquet)
+            .file_size_in_bytes(100)
+            .record_count(1)
+            .partition_spec_id(table.metadata().default_partition_spec_id())
+            .partition(Struct::from_iter([Some(Literal::long(300))]))
+            .build()
+            .unwrap();
+
+        let tx = Transaction::new(&table);
+        let action = tx.fast_append().add_data_files(vec![data_file]);
+        let mut action_commit = Arc::new(action).commit(&table).await.unwrap();
+        let updates = action_commit.take_updates();
+        let snapshot = if let TableUpdate::AddSnapshot { snapshot } = &updates[0] {
+            SnapshotRef::new(snapshot.clone())
+        } else {
+            unreachable!("first update of a fast append should be AddSnapshot")
+        };
+        let manifest_list = table.manifest_list_reader(&snapshot).load().await.unwrap();
+        assert_eq!(manifest_list.entries().len(), 1);
+
+        let manifest_list_bytes = table
+            .file_io()
+            .new_input(snapshot.manifest_list())
+            .unwrap()
+            .read()
+            .await
+            .unwrap();
+        assert_eq!(&manifest_list_bytes[..4], b"Obj\x01");
+        let mut manifest_list_header = &manifest_list_bytes[4..];
+        let manifest_list_metadata = from_avro_datum(
+            &AvroSchema::map(AvroSchema::Bytes),
+            &mut manifest_list_header,
+            None,
+        )
+        .unwrap();
+        let apache_avro::types::Value::Map(manifest_list_metadata) = manifest_list_metadata else {
+            panic!("manifest list header metadata must be an Avro map");
+        };
+        assert_eq!(
+            manifest_list_metadata.get("avro.codec"),
+            Some(&apache_avro::types::Value::Bytes(b"snappy".to_vec()))
+        );
+
+        let manifest_file = &manifest_list.entries()[0];
+        let bytes = table
+            .file_io()
+            .new_input(&manifest_file.manifest_path)
+            .unwrap()
+            .read()
+            .await
+            .unwrap();
+        assert_eq!(&bytes[..4], b"Obj\x01");
+        let mut header = &bytes[4..];
+        let metadata =
+            from_avro_datum(&AvroSchema::map(AvroSchema::Bytes), &mut header, None).unwrap();
+        let apache_avro::types::Value::Map(metadata) = metadata else {
+            panic!("manifest header metadata must be an Avro map");
+        };
+        assert_eq!(
+            metadata.get("avro.codec"),
+            Some(&apache_avro::types::Value::Bytes(b"snappy".to_vec()))
+        );
+
+        let manifest = Manifest::parse_avro(&bytes).unwrap();
+        assert_eq!(manifest.entries().len(), 1);
     }
 }

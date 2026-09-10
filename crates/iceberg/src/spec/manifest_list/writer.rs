@@ -25,15 +25,125 @@ use super::_const_schema::{
 };
 use super::_serde::{ManifestFileV1, ManifestFileV2, ManifestFileV3};
 use super::{FormatVersion, ManifestContentType, ManifestFile, UNASSIGNED_SEQUENCE_NUMBER};
+use crate::compression::CompressionCodec;
 use crate::error::Result;
 use crate::io::FileWrite;
 use crate::{Error, ErrorKind};
+
+/// The builder used to create a [`ManifestListWriter`].
+pub struct ManifestListWriterBuilder {
+    writer: Box<dyn FileWrite>,
+    snapshot_id: i64,
+    parent_snapshot_id: Option<i64>,
+    codec: CompressionCodec,
+}
+
+impl ManifestListWriterBuilder {
+    /// Create a new manifest list writer builder.
+    pub fn new(
+        writer: Box<dyn FileWrite>,
+        snapshot_id: i64,
+        parent_snapshot_id: Option<i64>,
+    ) -> Self {
+        Self {
+            writer,
+            snapshot_id,
+            parent_snapshot_id,
+            codec: CompressionCodec::None,
+        }
+    }
+
+    /// Set the Iceberg compression codec used to write the manifest list.
+    pub fn with_codec(mut self, codec: CompressionCodec) -> Self {
+        self.codec = codec;
+        self
+    }
+
+    /// Build a manifest list writer for format version 1.
+    pub fn build_v1(self) -> ManifestListWriter {
+        let mut metadata = HashMap::from_iter([
+            ("snapshot-id".to_string(), self.snapshot_id.to_string()),
+            ("format-version".to_string(), "1".to_string()),
+        ]);
+        if let Some(parent_snapshot_id) = self.parent_snapshot_id {
+            metadata.insert(
+                "parent-snapshot-id".to_string(),
+                parent_snapshot_id.to_string(),
+            );
+        }
+        ManifestListWriter::new(
+            FormatVersion::V1,
+            self.writer,
+            metadata,
+            0,
+            self.snapshot_id,
+            None,
+            self.codec,
+        )
+    }
+
+    /// Build a manifest list writer for format version 2.
+    pub fn build_v2(self, sequence_number: i64) -> ManifestListWriter {
+        let mut metadata = HashMap::from_iter([
+            ("snapshot-id".to_string(), self.snapshot_id.to_string()),
+            ("sequence-number".to_string(), sequence_number.to_string()),
+            ("format-version".to_string(), "2".to_string()),
+        ]);
+        metadata.insert(
+            "parent-snapshot-id".to_string(),
+            self.parent_snapshot_id
+                .map(|v| v.to_string())
+                .unwrap_or("null".to_string()),
+        );
+        ManifestListWriter::new(
+            FormatVersion::V2,
+            self.writer,
+            metadata,
+            sequence_number,
+            self.snapshot_id,
+            None,
+            self.codec,
+        )
+    }
+
+    /// Build a manifest list writer for format version 3.
+    pub fn build_v3(self, sequence_number: i64, first_row_id: Option<u64>) -> ManifestListWriter {
+        let mut metadata = HashMap::from_iter([
+            ("snapshot-id".to_string(), self.snapshot_id.to_string()),
+            ("sequence-number".to_string(), sequence_number.to_string()),
+            ("format-version".to_string(), "3".to_string()),
+        ]);
+        metadata.insert(
+            "parent-snapshot-id".to_string(),
+            self.parent_snapshot_id
+                .map(|v| v.to_string())
+                .unwrap_or("null".to_string()),
+        );
+        metadata.insert(
+            "first-row-id".to_string(),
+            first_row_id
+                .map(|v| v.to_string())
+                .unwrap_or("null".to_string()),
+        );
+        ManifestListWriter::new(
+            FormatVersion::V3,
+            self.writer,
+            metadata,
+            sequence_number,
+            self.snapshot_id,
+            first_row_id,
+            self.codec,
+        )
+    }
+}
 
 /// A manifest list writer.
 pub struct ManifestListWriter {
     format_version: FormatVersion,
     writer: Box<dyn FileWrite>,
-    avro_writer: Writer<'static, Vec<u8>>,
+    metadata: HashMap<String, String>,
+    codec: CompressionCodec,
+    avro_writer: Option<Writer<'static, Vec<u8>>>,
     sequence_number: i64,
     snapshot_id: i64,
     next_row_id: Option<u64>,
@@ -43,7 +153,10 @@ impl std::fmt::Debug for ManifestListWriter {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ManifestListWriter")
             .field("format_version", &self.format_version)
-            .field("avro_writer", &self.avro_writer.schema())
+            .field(
+                "avro_writer",
+                &self.avro_writer.as_ref().map(|writer| writer.schema()),
+            )
             .finish_non_exhaustive()
     }
 }
@@ -60,17 +173,7 @@ impl ManifestListWriter {
         snapshot_id: i64,
         parent_snapshot_id: Option<i64>,
     ) -> Self {
-        let mut metadata = HashMap::from_iter([
-            ("snapshot-id".to_string(), snapshot_id.to_string()),
-            ("format-version".to_string(), "1".to_string()),
-        ]);
-        if let Some(parent_snapshot_id) = parent_snapshot_id {
-            metadata.insert(
-                "parent-snapshot-id".to_string(),
-                parent_snapshot_id.to_string(),
-            );
-        }
-        Self::new(FormatVersion::V1, writer, metadata, 0, snapshot_id, None)
+        ManifestListWriterBuilder::new(writer, snapshot_id, parent_snapshot_id).build_v1()
     }
 
     /// Construct a v2 [`ManifestListWriter`] that writes to a provided [`FileWrite`].
@@ -80,25 +183,8 @@ impl ManifestListWriter {
         parent_snapshot_id: Option<i64>,
         sequence_number: i64,
     ) -> Self {
-        let mut metadata = HashMap::from_iter([
-            ("snapshot-id".to_string(), snapshot_id.to_string()),
-            ("sequence-number".to_string(), sequence_number.to_string()),
-            ("format-version".to_string(), "2".to_string()),
-        ]);
-        metadata.insert(
-            "parent-snapshot-id".to_string(),
-            parent_snapshot_id
-                .map(|v| v.to_string())
-                .unwrap_or("null".to_string()),
-        );
-        Self::new(
-            FormatVersion::V2,
-            writer,
-            metadata,
-            sequence_number,
-            snapshot_id,
-            None,
-        )
+        ManifestListWriterBuilder::new(writer, snapshot_id, parent_snapshot_id)
+            .build_v2(sequence_number)
     }
 
     /// Construct a v3 [`ManifestListWriter`] that writes to a provided [`FileWrite`].
@@ -109,31 +195,8 @@ impl ManifestListWriter {
         sequence_number: i64,
         first_row_id: Option<u64>, // Always None for delete manifests
     ) -> Self {
-        let mut metadata = HashMap::from_iter([
-            ("snapshot-id".to_string(), snapshot_id.to_string()),
-            ("sequence-number".to_string(), sequence_number.to_string()),
-            ("format-version".to_string(), "3".to_string()),
-        ]);
-        metadata.insert(
-            "parent-snapshot-id".to_string(),
-            parent_snapshot_id
-                .map(|v| v.to_string())
-                .unwrap_or("null".to_string()),
-        );
-        metadata.insert(
-            "first-row-id".to_string(),
-            first_row_id
-                .map(|v| v.to_string())
-                .unwrap_or("null".to_string()),
-        );
-        Self::new(
-            FormatVersion::V3,
-            writer,
-            metadata,
-            sequence_number,
-            snapshot_id,
-            first_row_id,
-        )
+        ManifestListWriterBuilder::new(writer, snapshot_id, parent_snapshot_id)
+            .build_v3(sequence_number, first_row_id)
     }
 
     fn new(
@@ -143,22 +206,14 @@ impl ManifestListWriter {
         sequence_number: i64,
         snapshot_id: i64,
         first_row_id: Option<u64>,
+        codec: CompressionCodec,
     ) -> Self {
-        let avro_schema = match format_version {
-            FormatVersion::V1 => &MANIFEST_LIST_AVRO_SCHEMA_V1,
-            FormatVersion::V2 => &MANIFEST_LIST_AVRO_SCHEMA_V2,
-            FormatVersion::V3 => &MANIFEST_LIST_AVRO_SCHEMA_V3,
-        };
-        let mut avro_writer = Writer::new(avro_schema, Vec::new());
-        for (key, value) in metadata {
-            avro_writer
-                .add_user_metadata(key, value)
-                .expect("Avro metadata should be added to the writer before the first record.");
-        }
         Self {
             format_version,
             writer,
-            avro_writer,
+            metadata,
+            codec,
+            avro_writer: None,
             sequence_number,
             snapshot_id,
             next_row_id: first_row_id,
@@ -175,7 +230,7 @@ impl ManifestListWriter {
             FormatVersion::V1 => {
                 for manifest in manifests {
                     let manifests: ManifestFileV1 = manifest.try_into()?;
-                    self.avro_writer.append_ser(manifests)?;
+                    self.avro_writer()?.append_ser(manifests)?;
                 }
             }
             FormatVersion::V2 | FormatVersion::V3 => {
@@ -184,11 +239,11 @@ impl ManifestListWriter {
 
                     if self.format_version == FormatVersion::V2 {
                         let manifest_entry: ManifestFileV2 = manifest.try_into()?;
-                        self.avro_writer.append_ser(manifest_entry)?;
+                        self.avro_writer()?.append_ser(manifest_entry)?;
                     } else if self.format_version == FormatVersion::V3 {
                         self.assign_first_row_id(&mut manifest)?;
                         let manifest_entry: ManifestFileV3 = manifest.try_into()?;
-                        self.avro_writer.append_ser(manifest_entry)?;
+                        self.avro_writer()?.append_ser(manifest_entry)?;
                     }
                 }
             }
@@ -198,10 +253,40 @@ impl ManifestListWriter {
 
     /// Write the manifest list to the output file.
     pub async fn close(mut self) -> Result<()> {
-        let data = self.avro_writer.into_inner()?;
+        self.avro_writer()?;
+        let avro_writer = self.avro_writer.take().ok_or_else(|| {
+            Error::new(
+                ErrorKind::Unexpected,
+                "Manifest list Avro writer was not initialized.",
+            )
+        })?;
+        let data = avro_writer.into_inner()?;
         self.writer.write(Bytes::from(data)).await?;
         self.writer.close().await?;
         Ok(())
+    }
+
+    fn avro_writer(&mut self) -> Result<&mut Writer<'static, Vec<u8>>> {
+        if self.avro_writer.is_none() {
+            let avro_schema = match self.format_version {
+                FormatVersion::V1 => &MANIFEST_LIST_AVRO_SCHEMA_V1,
+                FormatVersion::V2 => &MANIFEST_LIST_AVRO_SCHEMA_V2,
+                FormatVersion::V3 => &MANIFEST_LIST_AVRO_SCHEMA_V3,
+            };
+            let mut avro_writer =
+                Writer::with_codec(avro_schema, Vec::new(), self.codec.to_avro()?);
+            for (key, value) in &self.metadata {
+                avro_writer.add_user_metadata(key.clone(), value.clone())?;
+            }
+            self.avro_writer = Some(avro_writer);
+        }
+
+        self.avro_writer.as_mut().ok_or_else(|| {
+            Error::new(
+                ErrorKind::Unexpected,
+                "Manifest list Avro writer was not initialized.",
+            )
+        })
     }
 
     /// Assign sequence numbers to manifest if they are unassigned
@@ -316,12 +401,15 @@ mod test {
     use std::fs;
     use std::path::Path;
 
+    use apache_avro::{Schema as AvroSchema, from_avro_datum};
     use tempfile::TempDir;
 
-    use super::ManifestListWriter;
+    use super::{ManifestListWriter, ManifestListWriterBuilder};
+    use crate::ErrorKind;
+    use crate::compression::CompressionCodec;
     use crate::io::{FileIO, FileWrite};
     use crate::spec::{
-        Datum, FieldSummary, ManifestContentType, ManifestFile, ManifestList,
+        Datum, FieldSummary, FormatVersion, ManifestContentType, ManifestFile, ManifestList,
         UNASSIGNED_SEQUENCE_NUMBER,
     };
 
@@ -363,11 +451,81 @@ mod test {
 
         let bs = fs::read(path).unwrap();
 
+        let mut header = &bs[4..];
+        let metadata =
+            from_avro_datum(&AvroSchema::map(AvroSchema::Bytes), &mut header, None).unwrap();
+        let apache_avro::types::Value::Map(metadata) = metadata else {
+            panic!("manifest list header metadata must be an Avro map");
+        };
+        assert_eq!(
+            metadata.get("avro.codec"),
+            Some(&apache_avro::types::Value::Bytes(b"null".to_vec()))
+        );
+
         let manifest_list =
             ManifestList::parse_with_version(&bs, crate::spec::FormatVersion::V1).unwrap();
         assert_eq!(manifest_list, expected_manifest_list);
 
         temp_dir.close().unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_manifest_list_writer_builder_uses_configured_codec() {
+        let temp_dir = TempDir::new().unwrap();
+        let path = temp_dir.path().join("compressed_manifest_list.avro");
+        let file_writer = file_writer(&path, FileIO::new_with_fs()).await;
+
+        ManifestListWriterBuilder::new(file_writer, 1, None)
+            .with_codec(CompressionCodec::Snappy)
+            .build_v2(1)
+            .close()
+            .await
+            .unwrap();
+
+        let bytes = fs::read(path).unwrap();
+        let mut header = &bytes[4..];
+        let metadata =
+            from_avro_datum(&AvroSchema::map(AvroSchema::Bytes), &mut header, None).unwrap();
+        let apache_avro::types::Value::Map(metadata) = metadata else {
+            panic!("manifest list header metadata must be an Avro map");
+        };
+        assert_eq!(
+            metadata.get("avro.codec"),
+            Some(&apache_avro::types::Value::Bytes(b"snappy".to_vec()))
+        );
+        assert_eq!(
+            ManifestList::parse_with_version(&bytes, FormatVersion::V2).unwrap(),
+            ManifestList { entries: vec![] }
+        );
+    }
+
+    #[tokio::test]
+    async fn test_manifest_list_writer_rejects_unsupported_codec_when_adding_manifests() {
+        let temp_dir = TempDir::new().unwrap();
+        let path = temp_dir.path().join("lz4_manifest_list.avro");
+        let file_writer = file_writer(&path, FileIO::new_with_fs()).await;
+
+        let mut writer = ManifestListWriterBuilder::new(file_writer, 1, None)
+            .with_codec(CompressionCodec::Lz4)
+            .build_v2(1);
+
+        let err = writer
+            .add_manifests(std::iter::once(test_manifest_file()))
+            .unwrap_err();
+        assert_eq!(err.kind(), ErrorKind::FeatureUnsupported);
+    }
+
+    #[tokio::test]
+    async fn test_manifest_list_writer_rejects_unsupported_codec_when_closing_empty_list() {
+        let temp_dir = TempDir::new().unwrap();
+        let path = temp_dir.path().join("lz4_manifest_list.avro");
+        let file_writer = file_writer(&path, FileIO::new_with_fs()).await;
+
+        let writer = ManifestListWriterBuilder::new(file_writer, 1, None)
+            .with_codec(CompressionCodec::Lz4)
+            .build_v2(1);
+
+        assert!(writer.close().await.is_err());
     }
 
     #[tokio::test]
@@ -613,5 +771,26 @@ mod test {
             .writer()
             .await
             .unwrap()
+    }
+
+    fn test_manifest_file() -> ManifestFile {
+        ManifestFile {
+            manifest_path: "manifest.avro".to_string(),
+            manifest_length: 0,
+            partition_spec_id: 0,
+            content: ManifestContentType::Data,
+            sequence_number: 1,
+            min_sequence_number: 1,
+            added_snapshot_id: 1,
+            added_files_count: Some(1),
+            existing_files_count: Some(0),
+            deleted_files_count: Some(0),
+            added_rows_count: Some(1),
+            existing_rows_count: Some(0),
+            deleted_rows_count: Some(0),
+            partitions: None,
+            key_metadata: None,
+            first_row_id: None,
+        }
     }
 }

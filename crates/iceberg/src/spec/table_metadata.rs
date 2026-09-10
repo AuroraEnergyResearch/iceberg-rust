@@ -35,7 +35,7 @@ pub use super::table_metadata_builder::{TableMetadataBuildResult, TableMetadataB
 use super::{
     DEFAULT_PARTITION_SPEC_ID, PartitionSpecRef, PartitionStatisticsFile, SchemaId, SchemaRef,
     SnapshotRef, SnapshotRetention, SortOrder, SortOrderRef, StatisticsFile, StructType,
-    TableProperties, parse_metadata_file_compression,
+    TableProperties, parse_manifest_compression_codec, parse_metadata_file_compression,
 };
 use crate::catalog::MetadataLocation;
 use crate::compression::CompressionCodec;
@@ -374,6 +374,11 @@ impl TableMetadata {
     /// Returns an error if the compression codec property has an invalid value.
     pub fn metadata_compression_codec(&self) -> Result<CompressionCodec> {
         parse_metadata_file_compression(&self.properties)
+    }
+
+    /// Returns the Iceberg compression codec for manifest files from table properties.
+    pub fn manifest_compression_codec(&self) -> Result<CompressionCodec> {
+        parse_manifest_compression_codec(&self.properties)
     }
 
     /// Returns typed table properties parsed from the raw properties map with defaults.
@@ -1638,6 +1643,19 @@ mod tests {
         let metadata: String = fs::read_to_string(path).unwrap();
 
         serde_json::from_str(&metadata).unwrap()
+    }
+
+    #[test]
+    fn test_manifest_compression_codec() {
+        let mut metadata = get_test_table_metadata("TableMetadataV2Valid.json");
+        metadata.properties = HashMap::from([(
+            TableProperties::PROPERTY_AVRO_COMPRESSION_CODEC.to_string(),
+            "snappy".to_string(),
+        )]);
+        assert_eq!(
+            metadata.manifest_compression_codec().unwrap(),
+            CompressionCodec::Snappy
+        );
     }
 
     #[test]

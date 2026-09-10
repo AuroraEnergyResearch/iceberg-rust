@@ -97,6 +97,33 @@ pub(crate) fn parse_metadata_file_compression(
     }
 }
 
+/// Parse the Iceberg compression codec for manifest files from table properties.
+pub(crate) fn parse_manifest_compression_codec(
+    properties: &HashMap<String, String>,
+) -> Result<CompressionCodec> {
+    let key = TableProperties::PROPERTY_AVRO_COMPRESSION_CODEC;
+    let value = properties
+        .get(key)
+        .map(String::as_str)
+        .unwrap_or(TableProperties::PROPERTY_AVRO_COMPRESSION_CODEC_DEFAULT);
+
+    match value.to_ascii_lowercase().as_str() {
+        // `none` remains a compatibility alias for the Iceberg `uncompressed` value.
+        "none" | "uncompressed" => Ok(CompressionCodec::None),
+        "gzip" => Ok(CompressionCodec::gzip_default()),
+        "snappy" => Ok(CompressionCodec::Snappy),
+        "zstd" => Ok(CompressionCodec::zstd_default()),
+        _ => Err(
+            Error::new(ErrorKind::DataInvalid, "Invalid manifest compression codec")
+                .with_context("key", key)
+                .with_context("value", value)
+                .with_source(anyhow::anyhow!(
+                    "expected one of: none, uncompressed, gzip, snappy, zstd"
+                )),
+        ),
+    }
+}
+
 /// TableProperties that contains the properties of a table.
 #[derive(Debug)]
 pub struct TableProperties {
@@ -232,6 +259,10 @@ impl TableProperties {
     pub const PROPERTY_METADATA_COMPRESSION_CODEC: &str = "write.metadata.compression-codec";
     /// Default metadata compression codec - uncompressed
     pub const PROPERTY_METADATA_COMPRESSION_CODEC_DEFAULT: &str = "none";
+    /// Property key for Avro file compression.
+    pub const PROPERTY_AVRO_COMPRESSION_CODEC: &str = "write.avro.compression-codec";
+    /// Default Avro file compression codec.
+    pub const PROPERTY_AVRO_COMPRESSION_CODEC_DEFAULT: &str = "gzip";
     /// Whether to use `FanoutWriter` for partitioned tables (handles unsorted data).
     /// If false, uses `ClusteredWriter` (requires sorted data, more memory efficient).
     pub const PROPERTY_DATAFUSION_WRITE_FANOUT_ENABLED: &str = "write.datafusion.fanout.enabled";
@@ -718,6 +749,64 @@ mod tests {
                 err_msg.contains("Only 'none' and 'gzip' are supported"),
                 "Expected error message to contain supported codecs, got: {err_msg}"
             );
+        }
+    }
+
+    #[test]
+    fn test_parse_manifest_compression_codec_avro() {
+        let props = HashMap::from([(
+            TableProperties::PROPERTY_AVRO_COMPRESSION_CODEC.to_string(),
+            "zstd".to_string(),
+        )]);
+
+        assert_eq!(
+            parse_manifest_compression_codec(&props).unwrap(),
+            CompressionCodec::zstd_default()
+        );
+    }
+
+    #[test]
+    fn test_parse_manifest_compression_codec_defaults_to_gzip() {
+        assert_eq!(
+            parse_manifest_compression_codec(&HashMap::new()).unwrap(),
+            CompressionCodec::gzip_default()
+        );
+    }
+
+    #[test]
+    fn test_parse_manifest_compression_codec_valid_values_are_case_insensitive() {
+        for (value, expected) in [
+            ("NoNe", CompressionCodec::None),
+            ("UnCoMpReSsEd", CompressionCodec::None),
+            ("GzIp", CompressionCodec::gzip_default()),
+            ("SnApPy", CompressionCodec::Snappy),
+            ("ZsTd", CompressionCodec::zstd_default()),
+        ] {
+            let props = HashMap::from([(
+                TableProperties::PROPERTY_AVRO_COMPRESSION_CODEC.to_string(),
+                value.to_string(),
+            )]);
+
+            assert_eq!(parse_manifest_compression_codec(&props).unwrap(), expected);
+        }
+    }
+
+    #[test]
+    fn test_parse_manifest_compression_codec_invalid_avro_value_does_not_use_default() {
+        for value in ["", "deflate"] {
+            let props = HashMap::from([(
+                TableProperties::PROPERTY_AVRO_COMPRESSION_CODEC.to_string(),
+                value.to_string(),
+            )]);
+
+            let error = parse_manifest_compression_codec(&props).unwrap_err();
+            assert_eq!(error.kind(), ErrorKind::DataInvalid);
+            assert!(
+                error
+                    .to_string()
+                    .contains("key: write.avro.compression-codec")
+            );
+            assert!(error.to_string().contains(&format!("value: {value}")));
         }
     }
 

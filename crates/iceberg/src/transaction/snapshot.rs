@@ -26,9 +26,9 @@ use uuid::Uuid;
 use crate::error::Result;
 use crate::spec::{
     DataFile, DataFileFormat, FormatVersion, MAIN_BRANCH, ManifestContentType, ManifestEntry,
-    ManifestFile, ManifestListWriter, ManifestWriter, ManifestWriterBuilder, Operation, Snapshot,
-    SnapshotReference, SnapshotRetention, SnapshotSummaryCollector, Struct, StructType, Summary,
-    TableProperties, update_snapshot_summaries,
+    ManifestFile, ManifestListWriterBuilder, ManifestWriter, ManifestWriterBuilder, Operation,
+    Snapshot, SnapshotReference, SnapshotRetention, SnapshotSummaryCollector, Struct, StructType,
+    Summary, TableProperties, update_snapshot_summaries,
 };
 use crate::table::Table;
 use crate::transaction::ActionCommit;
@@ -61,7 +61,9 @@ const META_ROOT_PATH: &str = "metadata";
 ///
 /// 3. **Delete Entry Processing**: The `delete_entries()` method is intended for future delete
 ///    operations to specify which manifest entries should be marked as deleted.
-pub(crate) trait SnapshotProduceOperation: Send + Sync {
+///
+/// AER_LOG: Make this public for Charon reclustering spike.
+pub trait SnapshotProduceOperation: Send + Sync {
     /// Returns the operation type that will be recorded in the snapshot summary.
     ///
     /// This determines what kind of operation is being performed (e.g., `Append`, `Overwrite`),
@@ -101,7 +103,9 @@ impl ManifestProcess for DefaultManifestProcess {
     }
 }
 
-pub(crate) trait ManifestProcess: Send + Sync {
+/// AER_LOG: Make this public for Charon reclustering spike.
+pub trait ManifestProcess: Send + Sync {
+    /// AER_LOG: Make this public for Charon reclustering spike.
     fn process_manifests(
         &self,
         snapshot_produce: &SnapshotProducer<'_>,
@@ -109,8 +113,10 @@ pub(crate) trait ManifestProcess: Send + Sync {
     ) -> Vec<ManifestFile>;
 }
 
-pub(crate) struct SnapshotProducer<'a> {
-    pub(crate) table: &'a Table,
+/// AER_LOG: Make this public for Charon reclustering spike.
+pub struct SnapshotProducer<'a> {
+    /// AER_LOG: Make this public for Charon reclustering spike.
+    pub table: &'a Table,
     snapshot_id: i64,
     commit_uuid: Uuid,
     snapshot_properties: HashMap<String, String>,
@@ -122,7 +128,8 @@ pub(crate) struct SnapshotProducer<'a> {
 }
 
 impl<'a> SnapshotProducer<'a> {
-    pub(crate) fn new(
+    /// AER_LOG: Make this public for Charon reclustering spike.
+    pub fn new(
         table: &'a Table,
         commit_uuid: Uuid,
         snapshot_properties: HashMap<String, String>,
@@ -138,7 +145,8 @@ impl<'a> SnapshotProducer<'a> {
         }
     }
 
-    pub(crate) fn validate_added_data_files(&self) -> Result<()> {
+    /// AER_LOG: Make this public for Charon reclustering spike.
+    pub fn validate_added_data_files(&self) -> Result<()> {
         for data_file in &self.added_data_files {
             if data_file.content_type() != crate::spec::DataContentType::Data {
                 return Err(Error::new(
@@ -162,7 +170,8 @@ impl<'a> SnapshotProducer<'a> {
         Ok(())
     }
 
-    pub(crate) async fn validate_duplicate_files(&self) -> Result<()> {
+    /// AER_LOG: Make this public for Charon reclustering spike.
+    pub async fn validate_duplicate_files(&self) -> Result<()> {
         let Some(current_snapshot) = self.table.metadata().current_snapshot() else {
             return Ok(());
         };
@@ -258,7 +267,8 @@ impl<'a> SnapshotProducer<'a> {
                 .default_partition_spec()
                 .as_ref()
                 .clone(),
-        );
+        )
+        .with_codec(self.table.metadata().manifest_compression_codec()?);
         match self.table.metadata().format_version() {
             FormatVersion::V1 => Ok(builder.build_v1()),
             FormatVersion::V2 => match content {
@@ -432,8 +442,8 @@ impl<'a> SnapshotProducer<'a> {
         )
     }
 
-    /// Finished building the action and return the [`ActionCommit`] to the transaction.
-    pub(crate) async fn commit<OP: SnapshotProduceOperation, MP: ManifestProcess>(
+    /// AER_LOG: Make this public for Charon reclustering spike.
+    pub async fn commit<OP: SnapshotProduceOperation, MP: ManifestProcess>(
         mut self,
         snapshot_produce_operation: OP,
         process: MP,
@@ -447,25 +457,16 @@ impl<'a> SnapshotProducer<'a> {
             .new_output(manifest_list_path.clone())?
             .writer()
             .await?;
+        let manifest_list_writer = ManifestListWriterBuilder::new(
+            writer,
+            self.snapshot_id,
+            self.table.metadata().current_snapshot_id(),
+        )
+        .with_codec(self.table.metadata().manifest_compression_codec()?);
         let mut manifest_list_writer = match self.table.metadata().format_version() {
-            FormatVersion::V1 => ManifestListWriter::v1(
-                writer,
-                self.snapshot_id,
-                self.table.metadata().current_snapshot_id(),
-            ),
-            FormatVersion::V2 => ManifestListWriter::v2(
-                writer,
-                self.snapshot_id,
-                self.table.metadata().current_snapshot_id(),
-                next_seq_num,
-            ),
-            FormatVersion::V3 => ManifestListWriter::v3(
-                writer,
-                self.snapshot_id,
-                self.table.metadata().current_snapshot_id(),
-                next_seq_num,
-                Some(first_row_id),
-            ),
+            FormatVersion::V1 => manifest_list_writer.build_v1(),
+            FormatVersion::V2 => manifest_list_writer.build_v2(next_seq_num),
+            FormatVersion::V3 => manifest_list_writer.build_v3(next_seq_num, Some(first_row_id)),
         };
 
         // Calling self.summary() before self.manifest_file() is important because self.added_data_files
@@ -526,5 +527,49 @@ impl<'a> SnapshotProducer<'a> {
         ];
 
         Ok(ActionCommit::new(updates, requirements))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+    use std::sync::Arc;
+
+    use crate::ErrorKind;
+    use crate::spec::TableProperties;
+    use crate::transaction::tests::make_v2_minimal_table;
+    use crate::transaction::{Transaction, TransactionAction};
+
+    #[tokio::test]
+    async fn test_fast_append_rejects_invalid_manifest_compression_codec() {
+        let table = make_v2_minimal_table();
+        let metadata = table
+            .metadata()
+            .clone()
+            .into_builder(None)
+            .set_properties(HashMap::from([(
+                TableProperties::PROPERTY_AVRO_COMPRESSION_CODEC.to_string(),
+                "invalid".to_string(),
+            )]))
+            .unwrap()
+            .build()
+            .unwrap()
+            .metadata;
+        let table = table.with_metadata(Arc::new(metadata));
+
+        let error = match Arc::new(Transaction::new(&table).fast_append())
+            .commit(&table)
+            .await
+        {
+            Ok(_) => panic!("invalid manifest compression codec must fail"),
+            Err(error) => error,
+        };
+        assert_eq!(error.kind(), ErrorKind::DataInvalid);
+        assert!(
+            error
+                .to_string()
+                .contains("key: write.avro.compression-codec")
+        );
+        assert!(error.to_string().contains("value: invalid"));
     }
 }
