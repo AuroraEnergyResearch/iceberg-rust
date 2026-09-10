@@ -30,11 +30,13 @@ pub(crate) type BoxedTransactionAction = Arc<dyn TransactionAction>;
 
 /// A trait representing an atomic action that can be part of a transaction.
 ///
-/// Implementors of this trait define how a specific action is committed to a table.
-/// Each action is responsible for generating the updates and requirements needed
-/// to modify the table metadata.
+/// Implementors define how a specific action is committed to a table. Each action is
+/// responsible for generating the updates and requirements needed to modify the table
+/// metadata.
+///
+/// AER_LOG: Make this public for Charon reclustering spike.
 #[async_trait]
-pub(crate) trait TransactionAction: AsAny + Sync + Send {
+pub trait TransactionAction: AsAny + Sync + Send {
     /// Commits this action against the provided table and returns the resulting updates.
     /// NOTE: This function is intended for internal use only and should not be called directly by users.
     ///
